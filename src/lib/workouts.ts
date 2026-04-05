@@ -7,7 +7,6 @@ import {
   deleteDoc,
   query,
   where,
-  orderBy,
 } from 'firebase/firestore'
 import { db } from './firebase'
 import type { WorkoutLog, UserProfile, BuddyConnection } from './types'
@@ -59,11 +58,13 @@ export async function saveWorkout(log: WorkoutLog): Promise<string> {
 export async function getWorkoutsForUser(userId: string): Promise<WorkoutLog[]> {
   const q = query(
     collection(db, 'workouts'),
-    where('userId', '==', userId),
-    orderBy('date', 'desc')
+    where('userId', '==', userId)
   )
   const snap = await getDocs(q)
-  return snap.docs.map(d => d.data() as WorkoutLog)
+  // Sort client-side — avoids needing a composite Firestore index
+  return snap.docs
+    .map(d => d.data() as WorkoutLog)
+    .sort((a, b) => b.date.localeCompare(a.date))
 }
 
 export async function getWorkoutByDate(userId: string, date: string): Promise<WorkoutLog | null> {
