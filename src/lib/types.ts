@@ -14,7 +14,7 @@ export interface WorkoutLog {
   userId: string
   date: string // YYYY-MM-DD
   type: 'workout' | 'rest'
-  workoutType?: string // e.g., "Push", "Pull", "Legs", "Cardio", "Custom"
+  workoutType?: string
   exercises: Exercise[]
   notes?: string
   duration?: number // total minutes
@@ -30,6 +30,19 @@ export interface UserProfile {
   currentStreak: number
   longestStreak: number
   lastActiveDate?: string // YYYY-MM-DD
+
+  // Rest day scheduling (0=Sun, 1=Mon, …, 6=Sat)
+  scheduledRestDays: number[]
+
+  // Cheat days
+  cheatDaysEarned: number   // auto-derived: floor(longestStreak / 21)
+  cheatDaysUsed: number     // how many have been spent
+  cheatDayDates: string[]   // which dates used a cheat day
+
+  // Notifications
+  notificationsEnabled: boolean
+  notificationTime: string  // "HH:MM" 24h format
+
   shareCode?: string
 }
 
@@ -62,3 +75,6 @@ export const COMMON_EXERCISES: Record<string, string[]> = {
   Core: ['Plank', 'Crunches', 'Russian Twists', 'Leg Raises', 'Ab Wheel Rollout'],
   Custom: [],
 }
+
+export const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+export const DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']

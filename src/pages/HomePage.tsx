@@ -2,15 +2,17 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { getWorkoutsForUser } from '../lib/workouts'
+import { initInstallPrompt, scheduleNextNotification, getNotificationSchedule } from '../lib/notifications'
 import type { WorkoutLog } from '../lib/types'
 import { format, startOfWeek, addDays, isSameDay, parseISO } from 'date-fns'
-import { Flame, BedDouble, Dumbbell, ChevronRight, CalendarDays } from 'lucide-react'
+import { Flame, BedDouble, Dumbbell, ChevronRight, CalendarDays, Shield } from 'lucide-react'
 
 export default function HomePage() {
   const { profile, refreshProfile } = useAuth()
   const navigate = useNavigate()
   const [workouts, setWorkouts] = useState<WorkoutLog[]>([])
   const [loading, setLoading] = useState(true)
+  const [installAvailable, setInstallAvailable] = useState(false)
 
   useEffect(() => {
     if (!profile) return
@@ -19,13 +21,25 @@ export default function HomePage() {
       setLoading(false)
     })
     refreshProfile()
+
+    // Init PWA install prompt listener
+    initInstallPrompt(() => setInstallAvailable(true))
+
+    // Re-schedule notification if enabled
+    const { enabled, time } = getNotificationSchedule()
+    if (enabled && profile.displayName) {
+      scheduleNextNotification(time, profile.displayName)
+    }
   }, [profile?.uid])
 
   const today = new Date()
   const todayStr = format(today, 'yyyy-MM-dd')
   const todayLog = workouts.find(w => w.date === todayStr)
+  const scheduledRestDays = profile?.scheduledRestDays ?? []
+  const cheatDayDates = new Set(profile?.cheatDayDates ?? [])
+  const cheatDaysAvailable = Math.max(0, (profile?.cheatDaysEarned ?? 0) - (profile?.cheatDaysUsed ?? 0))
 
-  // Build the last 7 days for the mini calendar
+  // Build the week strip
   const weekStart = startOfWeek(today, { weekStartsOn: 1 })
   const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
 
@@ -33,27 +47,53 @@ export default function HomePage() {
   const recentWorkouts = workouts.filter(w => w.date !== todayStr).slice(0, 5)
 
   // Stats
-  const thisWeekWorkouts = workouts.filter(w => {
-    const d = parseISO(w.date)
-    return d >= weekStart && d <= today && w.type === 'workout'
-  }).length
+  const thisWeekActive = weekDays.filter(day => {
+    const dateStr = format(day, 'yyyy-MM-dd')
+    const log = workouts.find(w => w.date === dateStr)
+    return log || scheduledRestDays.includes(day.getDay())
+  }).filter(d => d <= today).length
 
   const totalWorkouts = workouts.filter(w => w.type === 'workout').length
 
+  const todayIsScheduledRest = scheduledRestDays.includes(today.getDay())
+
   return (
     <div className="px-4 pt-6">
+      {/* Install Banner */}
+      {installAvailable && (
+        <button
+          onClick={() => navigate('/profile')}
+          className="w-full flex items-center gap-2 bg-primary/10 border border-primary/30 rounded-xl px-3 py-2 mb-4 text-left"
+        >
+          <span className="text-lg">📲</span>
+          <div className="flex-1">
+            <p className="text-primary text-sm font-medium">Add to Home Screen</p>
+            <p className="text-primary/60 text-xs">Install for a native app experience</p>
+          </div>
+          <ChevronRight className="w-4 h-4 text-primary/60" />
+        </button>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <p className="text-gray-400 text-sm">Welcome back,</p>
           <h1 className="text-2xl font-bold text-white">{profile?.displayName?.split(' ')[0] || 'User'}</h1>
         </div>
-        {/* Streak badge */}
-        <div className="flex items-center gap-2 bg-surface rounded-2xl px-4 py-2">
-          <span className="streak-fire text-2xl">🔥</span>
-          <div className="text-left">
-            <p className="text-white font-bold text-lg leading-tight">{profile?.currentStreak || 0}</p>
-            <p className="text-gray-400 text-[10px] leading-tight">day streak</p>
+        {/* Streak + cheat day badge */}
+        <div className="flex items-center gap-2">
+          {cheatDaysAvailable > 0 && (
+            <div className="flex items-center gap-1 bg-accent-blue/20 rounded-2xl px-3 py-2">
+              <Shield className="w-4 h-4 text-accent-blue" />
+              <span className="text-accent-blue font-bold text-sm">{cheatDaysAvailable}</span>
+            </div>
+          )}
+          <div className="flex items-center gap-2 bg-surface rounded-2xl px-4 py-2">
+            <span className="streak-fire text-2xl">🔥</span>
+            <div className="text-left">
+              <p className="text-white font-bold text-lg leading-tight">{profile?.currentStreak || 0}</p>
+              <p className="text-gray-400 text-[10px] leading-tight">day streak</p>
+            </div>
           </div>
         </div>
       </div>
@@ -62,7 +102,7 @@ export default function HomePage() {
       <div className="bg-surface rounded-2xl p-4 mb-4">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-white font-semibold text-sm">This Week</h2>
-          <span className="text-gray-400 text-xs">{thisWeekWorkouts}/7 days</span>
+          <span className="text-gray-400 text-xs">{thisWeekActive}/7 days</span>
         </div>
         <div className="flex justify-between">
           {weekDays.map(day => {
@@ -70,31 +110,57 @@ export default function HomePage() {
             const log = workouts.find(w => w.date === dateStr)
             const isToday = isSameDay(day, today)
             const isFuture = day > today
+            const isScheduledRest = scheduledRestDays.includes(day.getDay())
+            const isCheatDay = cheatDayDates.has(dateStr)
 
-            let dotColor = 'bg-surface-light'
-            if (log?.type === 'workout') dotColor = 'bg-accent-green'
-            else if (log?.type === 'rest') dotColor = 'bg-accent-orange'
+            // Determine background style
+            let bgClass = isFuture
+              ? isScheduledRest
+                ? 'bg-accent-orange/10 text-gray-500 border border-dashed border-accent-orange/40'
+                : 'bg-surface-light/50 text-gray-600'
+              : log?.type === 'workout'
+                ? 'bg-accent-green/20 text-accent-green'
+                : log?.type === 'rest' || isScheduledRest
+                  ? 'bg-accent-orange/20 text-accent-orange'
+                  : isCheatDay
+                    ? 'bg-accent-blue/20 text-accent-blue'
+                    : 'bg-surface-light text-gray-400'
+
+            const dotColor = log?.type === 'workout' ? 'bg-accent-green'
+              : log?.type === 'rest' || (!isFuture && isScheduledRest) ? 'bg-accent-orange'
+              : isCheatDay ? 'bg-accent-blue'
+              : 'bg-surface-light'
 
             return (
               <button
                 key={dateStr}
-                onClick={() => !isFuture && navigate(`/log/${dateStr}`)}
+                onClick={() => !isFuture && !isScheduledRest && navigate(`/log/${dateStr}`)}
                 className="flex flex-col items-center gap-1.5"
               >
                 <span className="text-gray-500 text-[10px] uppercase">{format(day, 'EEE')}</span>
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium transition-all
-                  ${isToday ? 'ring-2 ring-primary' : ''}
-                  ${log?.type === 'workout' ? 'bg-accent-green/20 text-accent-green' :
-                    log?.type === 'rest' ? 'bg-accent-orange/20 text-accent-orange' :
-                    isFuture ? 'bg-surface-light/50 text-gray-600' : 'bg-surface-light text-gray-400'}`}
-                >
-                  {format(day, 'd')}
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium transition-all ${bgClass} ${isToday ? 'ring-2 ring-primary' : ''}`}>
+                  {isCheatDay && !log ? '🛡' : format(day, 'd')}
                 </div>
                 <div className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
               </button>
             )
           })}
         </div>
+        {/* Legend */}
+        {scheduledRestDays.length > 0 && (
+          <div className="flex items-center gap-3 mt-3 pt-3 border-t border-surface-light">
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 rounded-full bg-accent-orange/40 border border-dashed border-accent-orange" />
+              <span className="text-gray-500 text-[10px]">Planned rest</span>
+            </div>
+            {cheatDaysAvailable > 0 && (
+              <div className="flex items-center gap-1">
+                <Shield className="w-2.5 h-2.5 text-accent-blue" />
+                <span className="text-gray-500 text-[10px]">Cheat day used</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Today's Status */}
@@ -120,13 +186,19 @@ export default function HomePage() {
                     {todayLog.type === 'rest' ? 'Rest Day' : todayLog.workoutType || 'Workout'}
                   </p>
                   <p className="text-gray-400 text-sm">
-                    {todayLog.type === 'rest' ? 'Recovery day' : `${todayLog.exercises.length} exercises`}
+                    {todayLog.type === 'rest' ? 'Recovery day — streak safe ✓' : `${todayLog.exercises.length} exercises logged`}
                   </p>
                 </div>
               </div>
               <ChevronRight className="w-5 h-5 text-gray-500" />
             </div>
           </button>
+        ) : todayIsScheduledRest ? (
+          <div className="w-full bg-accent-orange/10 border border-accent-orange/30 rounded-2xl p-4 text-center">
+            <BedDouble className="w-8 h-8 text-accent-orange mx-auto mb-2" />
+            <p className="text-accent-orange font-semibold">Scheduled Rest Day</p>
+            <p className="text-accent-orange/60 text-sm">Your streak is safe — enjoy your recovery! 🧘</p>
+          </div>
         ) : (
           <button
             onClick={() => navigate('/log')}
@@ -153,7 +225,7 @@ export default function HomePage() {
         </div>
         <div className="bg-surface rounded-2xl p-3 text-center">
           <CalendarDays className="w-5 h-5 text-accent-green mx-auto mb-1" />
-          <p className="text-white font-bold text-lg">{thisWeekWorkouts}</p>
+          <p className="text-white font-bold text-lg">{thisWeekActive}</p>
           <p className="text-gray-400 text-[10px]">This Week</p>
         </div>
       </div>
