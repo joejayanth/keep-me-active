@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { saveWorkout, getWorkoutByDate, deleteWorkout } from '../lib/workouts'
-import { parseVoiceInput, startVoiceRecognition, isSpeechSupported } from '../lib/voiceInput'
+import { parseVoiceInput, startVoiceRecognition, isSpeechSupported, friendlyVoiceError } from '../lib/voiceInput'
 import type { Exercise, WorkoutLog, WorkoutType } from '../lib/types'
 import { WORKOUT_TYPES, COMMON_EXERCISES } from '../lib/types'
 import { format, parseISO } from 'date-fns'
@@ -23,6 +23,7 @@ export default function LogWorkoutPage() {
   const [duration, setDuration] = useState('')
   const [isRecording, setIsRecording] = useState(false)
   const [voiceTranscript, setVoiceTranscript] = useState('')
+  const [voiceError, setVoiceError] = useState<{ message: string; hint: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [existingId, setExistingId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -66,21 +67,22 @@ export default function LogWorkoutPage() {
 
     setIsRecording(true)
     setVoiceTranscript('')
+    setVoiceError(null)
 
-    const stop = startVoiceRecognition(
-      (transcript) => {
+    const stop = startVoiceRecognition({
+      onResult: (transcript) => {
         setVoiceTranscript(transcript)
         const parsed = parseVoiceInput(transcript)
         if (parsed.length > 0) {
           setExercises(prev => [...prev, ...parsed])
         }
       },
-      () => setIsRecording(false),
-      (error) => {
-        setVoiceTranscript(error)
+      onEnd: () => setIsRecording(false),
+      onError: (code) => {
+        setVoiceError(friendlyVoiceError(code))
         setIsRecording(false)
-      }
-    )
+      },
+    })
 
     if (!stop) setIsRecording(false)
   }
@@ -196,6 +198,7 @@ export default function LogWorkoutPage() {
             <div className="mb-4">
               <button
                 onClick={handleVoice}
+                disabled={isRecording}
                 className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl font-medium text-sm transition-all ${
                   isRecording
                     ? 'bg-accent-red text-white voice-pulse'
@@ -204,7 +207,7 @@ export default function LogWorkoutPage() {
               >
                 {isRecording ? (
                   <>
-                    <MicOff className="w-5 h-5" /> Listening...
+                    <MicOff className="w-5 h-5" /> Listening… speak now
                   </>
                 ) : (
                   <>
@@ -212,8 +215,35 @@ export default function LogWorkoutPage() {
                   </>
                 )}
               </button>
-              {voiceTranscript && (
-                <p className="text-gray-400 text-xs mt-2 italic">"{voiceTranscript}"</p>
+
+              {/* Error state */}
+              {voiceError && (
+                <div className="mt-2 bg-accent-red/10 border border-accent-red/30 rounded-xl p-3 flex items-start gap-2">
+                  <span className="text-accent-red text-lg leading-none">⚠️</span>
+                  <div className="flex-1">
+                    <p className="text-accent-red text-sm font-medium">{voiceError.message}</p>
+                    {voiceError.hint && (
+                      <p className="text-accent-red/70 text-xs mt-0.5">{voiceError.hint}</p>
+                    )}
+                  </div>
+                  <button onClick={() => setVoiceError(null)} className="text-accent-red/50">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* Success transcript */}
+              {voiceTranscript && !voiceError && (
+                <div className="mt-2 bg-accent-green/10 border border-accent-green/30 rounded-xl px-3 py-2 flex items-center gap-2">
+                  <span className="text-accent-green text-sm">✓</span>
+                  <p className="text-accent-green/80 text-xs italic flex-1">"{voiceTranscript}"</p>
+                </div>
+              )}
+
+              {!voiceError && !isRecording && (
+                <p className="text-gray-600 text-[10px] mt-1.5 text-center">
+                  Try: "bench press 3 sets of 10 at 135 lbs and pull-ups 4 by 8"
+                </p>
               )}
             </div>
           )}

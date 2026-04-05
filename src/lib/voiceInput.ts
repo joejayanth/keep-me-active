@@ -1,9 +1,9 @@
 import type { Exercise } from './types'
 
-// Parse spoken workout text into structured exercise data
+// ── Parse spoken workout text into structured exercise data ──
+
 export function parseVoiceInput(transcript: string): Exercise[] {
   const exercises: Exercise[] = []
-  // Split by "and", "then", commas, or periods
   const parts = transcript
     .toLowerCase()
     .split(/\s*(?:,|\.|\band\b|\bthen\b)\s*/)
@@ -22,11 +22,6 @@ function parseSingleExercise(text: string): Exercise | null {
 
   const exercise: Exercise = { name: '' }
 
-  // Match patterns like "3 sets of 10 reps bench press at 135 lbs"
-  // or "bench press 3x10 at 60 kg"
-  // or "ran 5k in 30 minutes"
-
-  // Extract sets x reps pattern: "3x10", "3 by 10", "3 sets of 10"
   const setsRepsMatch = text.match(/(\d+)\s*(?:x|by|sets?\s*(?:of)?)\s*(\d+)(?:\s*reps?)?/)
   if (setsRepsMatch) {
     exercise.sets = parseInt(setsRepsMatch[1])
@@ -34,7 +29,6 @@ function parseSingleExercise(text: string): Exercise | null {
     text = text.replace(setsRepsMatch[0], '').trim()
   }
 
-  // Extract just sets: "3 sets"
   if (!exercise.sets) {
     const setsMatch = text.match(/(\d+)\s*sets?/)
     if (setsMatch) {
@@ -43,7 +37,6 @@ function parseSingleExercise(text: string): Exercise | null {
     }
   }
 
-  // Extract just reps: "10 reps"
   if (!exercise.reps) {
     const repsMatch = text.match(/(\d+)\s*reps?/)
     if (repsMatch) {
@@ -52,7 +45,6 @@ function parseSingleExercise(text: string): Exercise | null {
     }
   }
 
-  // Extract weight: "135 lbs", "60 kg", "at 135 pounds"
   const weightMatch = text.match(/(?:at\s+)?(\d+(?:\.\d+)?)\s*(lbs?|pounds?|kg|kilos?|kgs?)/)
   if (weightMatch) {
     exercise.weight = parseFloat(weightMatch[1])
@@ -60,21 +52,18 @@ function parseSingleExercise(text: string): Exercise | null {
     text = text.replace(weightMatch[0], '').trim()
   }
 
-  // Extract duration: "30 minutes", "45 min"
   const durationMatch = text.match(/(\d+)\s*(?:minutes?|mins?)/)
   if (durationMatch) {
     exercise.duration = parseInt(durationMatch[1])
     text = text.replace(durationMatch[0], '').trim()
   }
 
-  // Extract distance: "5k", "5 km", "3 miles"
   const distanceMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:k\b|km|kilometers?|miles?)/)
   if (distanceMatch) {
     exercise.distance = parseFloat(distanceMatch[1])
     text = text.replace(distanceMatch[0], '').trim()
   }
 
-  // Remaining text is the exercise name
   const name = text
     .replace(/\b(at|for|with|of|did|do|doing)\b/g, '')
     .replace(/\s+/g, ' ')
@@ -91,15 +80,64 @@ function parseSingleExercise(text: string): Exercise | null {
   return exercise
 }
 
-// Web Speech API wrapper
-export function startVoiceRecognition(
-  onResult: (transcript: string) => void,
-  onEnd: () => void,
-  onError: (error: string) => void
-): (() => void) | null {
-  const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+// ── Friendly error messages ──
+
+export function friendlyVoiceError(errorCode: string): { message: string; hint: string } {
+  switch (errorCode) {
+    case 'network':
+      return {
+        message: 'Connection error',
+        hint: 'Speech recognition needs an internet connection. Check your connection and try again.',
+      }
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return {
+        message: 'Microphone access blocked',
+        hint: 'Please allow microphone access in your browser settings, then try again.',
+      }
+    case 'audio-capture':
+      return {
+        message: 'Microphone not found',
+        hint: 'Make sure a microphone is connected and accessible.',
+      }
+    case 'no-speech':
+      return {
+        message: 'No speech detected',
+        hint: 'Tap the mic button and speak clearly. Try again!',
+      }
+    case 'aborted':
+      return {
+        message: 'Stopped',
+        hint: '',
+      }
+    case 'language-not-supported':
+      return {
+        message: 'Language not supported',
+        hint: 'Try switching your device language to English.',
+      }
+    default:
+      return {
+        message: 'Voice input failed',
+        hint: `Error: ${errorCode}. Try again or add exercises manually.`,
+      }
+  }
+}
+
+// ── Web Speech API wrapper ──
+
+export interface VoiceRecognitionCallbacks {
+  onResult: (transcript: string) => void
+  onEnd: () => void
+  onError: (code: string) => void
+  onStart?: () => void
+}
+
+export function startVoiceRecognition(callbacks: VoiceRecognitionCallbacks): (() => void) | null {
+  const SpeechRecognition =
+    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+
   if (!SpeechRecognition) {
-    onError('Speech recognition is not supported in this browser')
+    callbacks.onError('unsupported')
     return null
   }
 
@@ -107,20 +145,44 @@ export function startVoiceRecognition(
   recognition.continuous = false
   recognition.interimResults = false
   recognition.lang = 'en-US'
+  recognition.maxAlternatives = 1
+
+  let gotResult = false
+
+  recognition.onstart = () => callbacks.onStart?.()
 
   recognition.onresult = (event: any) => {
+    gotResult = true
     const transcript = event.results[0][0].transcript
-    onResult(transcript)
+    callbacks.onResult(transcript)
   }
 
-  recognition.onend = onEnd
+  recognition.onend = () => {
+    if (!gotResult) {
+      // Ended without a result and no error — treat as no-speech
+      // (happens on some browsers when recognition times out silently)
+    }
+    callbacks.onEnd()
+  }
+
   recognition.onerror = (event: any) => {
-    onError(event.error === 'no-speech' ? 'No speech detected. Try again.' : `Error: ${event.error}`)
-    onEnd()
+    // 'aborted' fires when we manually call stop() — don't treat as error
+    if (event.error !== 'aborted') {
+      callbacks.onError(event.error)
+    }
+    callbacks.onEnd()
   }
 
-  recognition.start()
-  return () => recognition.stop()
+  try {
+    recognition.start()
+  } catch (e) {
+    callbacks.onError('start-failed')
+    return null
+  }
+
+  return () => {
+    try { recognition.abort() } catch (_) {}
+  }
 }
 
 export function isSpeechSupported(): boolean {
