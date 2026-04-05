@@ -2,11 +2,11 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import {
   onAuthStateChanged,
   signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
+  signInWithPhoneNumber,
+  RecaptchaVerifier,
   signOut as firebaseSignOut,
-  updateProfile as firebaseUpdateProfile,
   type User,
+  type ConfirmationResult,
 } from 'firebase/auth'
 import { auth, googleProvider } from '../lib/firebase'
 import { getOrCreateProfile } from '../lib/workouts'
@@ -17,8 +17,8 @@ interface AuthContextType {
   profile: UserProfile | null
   loading: boolean
   signInWithGoogle: () => Promise<void>
-  signInWithEmail: (email: string, password: string) => Promise<void>
-  signUpWithEmail: (email: string, password: string, name: string) => Promise<void>
+  sendPhoneOtp: (phone: string, recaptchaContainerId: string) => Promise<ConfirmationResult>
+  confirmPhoneOtp: (confirmationResult: ConfirmationResult, otp: string) => Promise<void>
   signOut: () => Promise<void>
   refreshProfile: () => Promise<void>
 }
@@ -39,8 +39,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function loadProfile(u: User) {
     const p = await getOrCreateProfile(
       u.uid,
-      u.email || '',
-      u.displayName || u.email?.split('@')[0] || 'User',
+      u.email || u.phoneNumber || '',
+      u.displayName || u.phoneNumber || 'User',
       u.photoURL || undefined
     )
     setProfile(p)
@@ -64,14 +64,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await loadProfile(result.user)
   }
 
-  const signInWithEmail = async (email: string, password: string) => {
-    const result = await signInWithEmailAndPassword(auth, email, password)
-    await loadProfile(result.user)
+  const sendPhoneOtp = async (phone: string, recaptchaContainerId: string): Promise<ConfirmationResult> => {
+    const recaptchaVerifier = new RecaptchaVerifier(auth, recaptchaContainerId, {
+      size: 'invisible',
+    })
+    const confirmationResult = await signInWithPhoneNumber(auth, phone, recaptchaVerifier)
+    return confirmationResult
   }
 
-  const signUpWithEmail = async (email: string, password: string, name: string) => {
-    const result = await createUserWithEmailAndPassword(auth, email, password)
-    await firebaseUpdateProfile(result.user, { displayName: name })
+  const confirmPhoneOtp = async (confirmationResult: ConfirmationResult, otp: string) => {
+    const result = await confirmationResult.confirm(otp)
     await loadProfile(result.user)
   }
 
@@ -85,7 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signInWithGoogle, signInWithEmail, signUpWithEmail, signOut, refreshProfile }}>
+    <AuthContext.Provider value={{ user, profile, loading, signInWithGoogle, sendPhoneOtp, confirmPhoneOtp, signOut, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   )
